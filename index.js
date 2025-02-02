@@ -1,73 +1,85 @@
-/**
- * app.js
- * 
- * A simple NodeJS API using Express that listens for a POST request,
- * accepts a JSON payload with a "name" field, and returns a welcome message.
- * This version is configured for deployment where your domain is
- * https://rhino24af1c.cloud.mlkv.xyz.
- * 
- * Author: ChatGPT (for Dan💻)
- * Date: 2025-02-01
- */
-
-"use strict";
-
-// Import required modules
+// app.js
 const express = require('express');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const morgan = require('morgan');
+const fs = require('fs');
+const path = require('path');
 
-// Create an Express application instance
 const app = express();
+const port = process.env.PORT || 3000;
 
-// Middlewares
-app.use(express.json());         // Parse JSON bodies in requests
-app.use(morgan('combined'));     // Log HTTP requests for monitoring and debugging
+// Security headers
+app.use(helmet());
 
-/**
- * POST /welcome
- * 
- * Expects a JSON payload with a "name" field.
- * Returns a JSON response with a welcome message.
- */
-app.post('/welcome', (req, res) => {
+// Rate limiting
+const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100 // limit each IP to 100 requests per windowMs
+});
+app.use(limiter);
+
+// Logging setup
+const accessLogStream = fs.createWriteStream(
+    path.join(__dirname, 'access.log'), 
+    { flags: 'a' }
+);
+app.use(morgan('combined', { stream: accessLogStream }));
+
+// Middleware
+app.use(express.json());
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+    res.status(200).json({ status: 'healthy' });
+});
+
+// GET endpoint
+app.get('/api/test', (req, res) => {
+    req.log.info('GET request received');
+    res.json({
+        message: 'GET request successful',
+        data: { sampleKey: 'sampleValue' }
+    });
+});
+
+// POST endpoint
+app.post('/api/test', (req, res) => {
     try {
-        // Extract the name from the request body
-        const { name } = req.body;
-        
-        // Validate that the "name" field is provided
-        if (!name) {
-            // ❗ Return an error if the "name" field is missing
-            return res.status(400).json({ error: 'Name field is required' });
+        const data = req.body;
+        req.log.info(`POST request received with data: ${JSON.stringify(data)}`);
+
+        if (!data || !data.name) {
+            return res.status(400).json({ error: "Missing required parameter 'name'" });
         }
 
-        // Construct the welcome message
-        const welcomeMessage = `Welcome ${name}`;
-
-        // Return the welcome message in JSON format
-        return res.status(200).json({ message: welcomeMessage });
+        res.json({
+            message: 'POST request successful',
+            receivedData: data,
+            processed: `Hello, ${data.name}!`
+        });
     } catch (error) {
-        // Log the error for debugging purposes
-        console.error('Error handling /welcome POST request:', error);
-        
-        // ❗ Return a generic internal server error message
-        return res.status(500).json({ error: 'Internal Server Error' });
+        req.log.error(`Error processing POST request: ${error.message}`);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
-/**
- * Global error handling middleware.
- * This catches any errors that might have been missed in route handlers.
- */
+// Error handling middleware
+app.use((req, res) => {
+    res.status(404).json({ error: 'Endpoint not found' });
+});
+
 app.use((err, req, res, next) => {
-    console.error('Unhandled error:', err);
-    res.status(500).json({ error: 'Something went wrong!' });
+    req.log.error(`Server error: ${err.message}`);
+    res.status(500).json({ error: 'Internal server error' });
 });
 
-// Define the port to listen on. Use environment variable PORT or default to 3000.
-const PORT = process.env.PORT || 3000;
-
-// Start the server and bind it to all network interfaces (0.0.0.0)
-// so that it is accessible from external sources including your domain.
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server is running on port ${PORT}`);
-});
+// Start server
+if (process.env.NODE_ENV !== 'production') {
+    app.listen(port, () => {
+        console.log(`Server running on http://localhost:${port}`);
+    });
+} else {
+    // For production, use PM2 cluster mode or similar
+    app.listen(port);
+}
